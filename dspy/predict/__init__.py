@@ -10,6 +10,7 @@ from dspy.predict.program_of_thought import ProgramOfThought
 from dspy.predict.react import ReAct, Tool
 from dspy.predict.code_act import CodeAct
 from dspy.predict.refine import Refine
+from dspy.predict.context_seeker import ContextSeeker, ContextSeekerTrainer, Oracle
 
 __all__ = [
     "majority",
@@ -25,4 +26,7 @@ __all__ = [
     "Refine",
     "Tool",
     "Parallel",
+    "ContextSeeker",
+    "ContextSeekerTrainer",
+    "Oracle",
 ]

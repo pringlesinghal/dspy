@@ -6,8 +6,10 @@ from copy import deepcopy
 import dspy
 import dspy.signatures
 from dspy.primitives.program import Module
+from dspy.signatures.field import OutputField, InputField
 from dspy.signatures.signature import Signature, ensure_signature, _default_instructions
-
+from dspy.predict.chain_of_thought import ChainOfThought
+from dspy.primitives.prediction import Prediction
 
 logger = logging.getLogger(__name__)
 
@@ -20,17 +22,24 @@ class ContextSeeker(Module):
     def __init__(
         self,
         signature: Union[str, Type[Signature]],
-        stopping_module: Optional[Type[Module]] = dspy.ChainOfThought,
-        query_module: Optional[Type[Module]] = dspy.ChainOfThought,
-        answer_module: Optional[Type[Module]] = dspy.ChainOfThought,
+        stopping_module: Optional[Type[Module]] = None,
+        query_module: Optional[Type[Module]] = None,
+        answer_module: Optional[Type[Module]] = None,
         oracle_module: Optional[Module] = None,
         budget: int = 5,
+        includes_allowed_questions: bool = False,
     ):
         self.signature = ensure_signature(signature)
         self.follow_up_question_type = str
         self.follow_up_response_type = str
         self.context_type = List[Tuple[str, str]]
         self.budget = budget
+        self.includes_allowed_questions = includes_allowed_questions
+
+        # Set default modules if not provided
+        stopping_module = stopping_module or ChainOfThought
+        query_module = query_module or ChainOfThought
+        answer_module = answer_module or ChainOfThought
 
         self.stopping_agent = stopping_module(signature=self._generate_signature_stopping_agent())
         self.query_agent = query_module(signature=self._generate_signature_query_agent())
@@ -45,12 +54,29 @@ class ContextSeeker(Module):
     def _add_context_to_input_fields(self, input_fields):
         input_fields["context"] = (
             self.context_type,
-            dspy.InputField(
+            InputField(
                 prefix="Context:",
                 desc="List of (follow-up question, response) tuples.",
                 type=self.context_type,
             ),
         )
+
+    def _generate_signature_answer_agent(self):
+        input_fields = dict(self.signature.input_fields)
+        if self.includes_allowed_questions:
+            del input_fields["allowed_questions"]
+        self._add_context_to_input_fields(input_fields)
+        input_fields.update(self.signature.output_fields)
+        return Signature(input_fields, instructions=_default_instructions(Signature(input_fields)))
+    
+    def _generate_signature_query_agent(self):
+        input_fields = dict(self.signature.input_fields)
+        self._add_context_to_input_fields(input_fields)
+        input_fields["follow-up question"] = (
+            str,
+            OutputField(prefix="Follow-up Question:", desc="Clarifying question.", type=str)
+        )
+        return Signature(input_fields, instructions=_default_instructions(Signature(input_fields)))
 
     def _generate_signature_stopping_agent(self):
         input_fields = dict(self.signature.input_fields)
@@ -60,22 +86,7 @@ class ContextSeeker(Module):
             dspy.OutputField(prefix="Ready:", desc="Whether to stop clarifying.", type=bool)
         )
         return Signature(input_fields, instructions=_default_instructions(Signature(input_fields)))
-
-    def _generate_signature_query_agent(self):
-        input_fields = dict(self.signature.input_fields)
-        self._add_context_to_input_fields(input_fields)
-        input_fields["follow-up question"] = (
-            str,
-            dspy.OutputField(prefix="Follow-up Question:", desc="Clarifying question.", type=str)
-        )
-        return Signature(input_fields, instructions=_default_instructions(Signature(input_fields)))
-
-    def _generate_signature_answer_agent(self):
-        input_fields = dict(self.signature.input_fields)
-        self._add_context_to_input_fields(input_fields)
-        input_fields.update(self.signature.output_fields)
-        return Signature(input_fields, instructions=_default_instructions(Signature(input_fields)))
-
+    
     def forward(self, **kwargs):
         context = []
         stopping_result = self.stopping_agent(**kwargs, context=context)
@@ -99,14 +110,14 @@ class Oracle(Module):
     """
     def __init__(self):
         signature = Signature({
-            "question": (str, dspy.InputField(prefix="Follow-up question:", desc="The question to answer", type=str)),
-            "privileged_context": (str, dspy.InputField(prefix="Privileged context:", desc="Context that the oracle can use", type=str)),
-            "answer": (str, dspy.OutputField(prefix="Answer:", desc="The answer to the question", type=str))
+            "question": (str, InputField(prefix="Follow-up question:", desc="The question to answer", type=str)),
+            "privileged_context": (str, InputField(prefix="Privileged context:", desc="Context that the oracle can use", type=str)),
+            "answer": (str, OutputField(prefix="Answer:", desc="The answer to the question", type=str))
         })
         signature.instructions = _default_instructions(signature)
-        self.oracle = dspy.ChainOfThought(signature=signature)
+        self.oracle = ChainOfThought(signature=signature)
 
-    def forward(self, question: str, privileged_context: str) -> dspy.Prediction:
+    def forward(self, question: str, privileged_context: str) -> Prediction:
         return self.oracle(question=question, privileged_context=privileged_context)
 
 
@@ -120,9 +131,9 @@ class ContextSeekerTrainer(Module):
         self,
         signature: Union[str, Type[Signature]],
         oracle_module: Type[Module] = Oracle,
-        stopping_module: Optional[Type[Module]] = dspy.ChainOfThought,
-        query_module: Optional[Type[Module]] = dspy.ChainOfThought,
-        answer_module: Optional[Type[Module]] = dspy.ChainOfThought,
+        stopping_module: Optional[Type[Module]] = ChainOfThought,
+        query_module: Optional[Type[Module]] = ChainOfThought,
+        answer_module: Optional[Type[Module]] = ChainOfThought,
         budget: int = 5,
         includes_allowed_questions: bool = False,
     ):
